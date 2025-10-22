@@ -1,0 +1,148 @@
+---
+title: "DESeq2_EvoCDA"
+author: "Basheer Becerra"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(DESeq2)
+library(tidyverse)
+```
+
+# EvoCDA Allele Counts Analysis (Restricted Variants)
+
+## Load EvoCDA Counts
+```{r load-evocda}
+evocda_df <- read.csv("EvoCDAPyDESEQ2CountTable.csv", row.names = 1, check.names = FALSE)
+evocda_counts <- t(as.matrix(evocda_df))
+```
+
+## Prepare Metadata for EvoCDA
+```{r metadata-evocda}
+samples_e <- colnames(evocda_counts)
+condition_e <- ifelse(grepl("^CD19minus", samples_e), "minus", "plus")
+coldata_e <- data.frame(
+  row.names = samples_e,
+  condition = factor(condition_e, levels = c("minus", "plus"))
+)
+```
+
+## Run DESeq2 for EvoCDA
+```{r dds-evocda}
+dds_e <- DESeqDataSetFromMatrix(
+  countData = evocda_counts,
+  colData   = coldata_e,
+  design    = ~ condition
+)
+
+# Set WT as control (optional)
+ctrl <- which(rownames(dds_e) == "wt") # COMMENT OUT FOR NO CONTROL
+dds_e <- estimateSizeFactors(dds_e, controlGenes = ctrl) # COMMENT OUT FOR NO CONTROL
+dds_e <- DESeq(dds_e)
+res_e <- results(dds_e, contrast = c("condition", "plus", "minus"))
+```
+
+## EvoCDA Results
+```{r summary-evocda}
+summary(res_e)
+head(res_e)
+```
+
+```{r write-evocda}
+write.csv(as.data.frame(res_e), file = "EvoCDA_DESeq2_results_WTctrl_final.csv")
+```
+
+# EvoCDA Allele Counts Analysis (All Variants)
+
+## Load EvoCDA Counts
+```{r load-evocda}
+evocda_df_allvariants <- read.csv("EvoCDAPyDESEQ2CountTableAllVariants.csv", row.names = 1, check.names = FALSE)
+evocda_counts_allvariants <- t(as.matrix(evocda_df_allvariants))
+```
+
+## Prepare Metadata for EvoCDA
+```{r metadata-evocda}
+samples_e <- colnames(evocda_counts_allvariants)
+condition_e <- ifelse(grepl("^CD19minus", samples_e), "minus", "plus")
+coldata_e <- data.frame(
+  row.names = samples_e,
+  condition = factor(condition_e, levels = c("minus", "plus"))
+)
+```
+
+## Run DESeq2 for EvoCDA
+```{r dds-evocda}
+dds_e_allvariants <- DESeqDataSetFromMatrix(
+  countData = evocda_counts,
+  colData   = coldata_e,
+  design    = ~ condition
+)
+
+# Set WT as control (optional)
+ctrl <- which(rownames(dds_e_allvariants) == "wt") # COMMENT OUT FOR NO CONTROL
+dds_e_allvariants <- estimateSizeFactors(dds_e_allvariants, controlGenes = ctrl) # COMMENT OUT FOR NO CONTROL
+dds_e_allvariants <- DESeq(dds_e_allvariants)
+res_e_allvariants <- results(dds_e_allvariants, contrast = c("condition", "plus", "minus"))
+```
+
+## EvoCDA Results
+```{r summary-evocda}
+summary(res_e_allvariants)
+head(res_e_allvariants)
+```
+
+```{r write-evocda}
+write.csv(as.data.frame(res_e_allvariants), file = "EvoCDA_DESeq2_results_WTctrl_AllVariants_final.csv")
+```
+
+## MA Plots
+```{r ma-plots, fig.width=6, fig.height=6}
+plotMA(res_e,   main = "EvoCDA: MA Plot", ylim = c(-5, 5))
+plotMA(res_e_allvariants,   main = "EvoCDA All: MA Plot", ylim = c(-5, 5))
+```
+
+# EvoCDA per-replicate scores
+```{r}
+# VST-transform the restricted EvoCDA dataset
+vsd_e <- varianceStabilizingTransformation(dds_e, blind = TRUE)
+vmat_e <- assay(vsd_e)
+
+# Helper metadata with replicate labels
+meta_e <- as.data.frame(colData(vsd_e)) %>%
+  tibble::rownames_to_column("sample") %>%
+  dplyr::mutate(rep = stringr::str_extract(sample, "rep\\d+"))
+
+# Replicates that have BOTH conditions (minus & plus)
+reps_e <- intersect(
+  meta_e %>% dplyr::filter(condition == "minus") %>% dplyr::pull(rep),
+  meta_e %>% dplyr::filter(condition == "plus")  %>% dplyr::pull(rep)
+)
+
+# Compute per-replicate LFC = (plus - minus) on the VST (log-like) scale
+lfc_list_e <- lapply(reps_e, function(r) {
+  s_plus  <- meta_e %>% dplyr::filter(condition == "plus",  rep == r) %>% dplyr::pull(sample)
+  s_minus <- meta_e %>% dplyr::filter(condition == "minus", rep == r) %>% dplyr::pull(sample)
+  stopifnot(length(s_plus) == 1, length(s_minus) == 1)
+  vmat_e[, s_plus, drop = TRUE] - vmat_e[, s_minus, drop = TRUE]
+})
+
+lfc_mat_e <- do.call(cbind, lfc_list_e)
+colnames(lfc_mat_e) <- reps_e
+rownames(lfc_mat_e) <- rownames(vmat_e)
+
+# Save and show correlations
+write.csv(lfc_mat_e, file = "EvoCDA_vst_perrep_LFC.csv")
+cor_e <- cor(lfc_mat_e, use = "pairwise.complete.obs", method = "pearson")
+print(cor_e)
+
+```
+
+```{r}
+pairs(
+  lfc_mat_e,
+  main = "EvoCDA (restricted): per-replicate VST LFC (plus − minus)",
+  pch = 19, cex = 0.4
+)
+```

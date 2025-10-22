@@ -1,0 +1,100 @@
+---
+title: "DESeq2_ABE_sg218"
+author: "Basheer Becerra"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(DESeq2)
+library(tidyverse)
+```
+
+# ABE Allele Counts Analysis (SG218)
+
+## Load ABE Counts
+```{r load-abe}
+abe_df <- read.table("ABEsg218CountDf.tsv", row.names = 1, header=TRUE, check.names = FALSE)
+# Transpose so rows = genes/alleles, cols = samples
+abe_counts <- t(as.matrix(abe_df))
+```
+
+## Prepare Metadata for ABE
+```{r metadata-abe}
+samples_abe <- colnames(abe_counts)
+condition_abe <- ifelse(grepl("^CD19minus", samples_abe), "minus", "plus")
+coldata_abe <- data.frame(
+  row.names = samples_abe,
+  condition = factor(condition_abe, levels = c("minus", "plus"))
+)
+```
+
+## Run DESeq2 for ABE
+```{r dds-abe}
+dds_abe <- DESeqDataSetFromMatrix(
+  countData = abe_counts,
+  colData   = coldata_abe,
+  design    = ~ condition
+)
+
+# Set WT as control (optional)
+ctrl <- which(rownames(dds_abe) == "wt")
+dds_abe <- estimateSizeFactors(dds_abe, controlGenes = ctrl)
+
+dds_abe <- DESeq(dds_abe)
+res_abe <- results(dds_abe, contrast = c("condition", "plus", "minus"))
+```
+
+## ABE Results
+```{r summary-abe}
+summary(res_abe)
+head(res_abe)
+```
+```{r write-abe}
+write.csv(as.data.frame(res_abe), file = "ABESG218_DESeq2_results_WTctrl_final.csv")
+```
+
+# ABE sg218 per-replicate scores
+```{r}
+# VST-transform the restricted ABE dataset
+vsd_abe <- varianceStabilizingTransformation(dds_abe, blind = TRUE)
+vmat_abe <- assay(vsd_abe)
+
+# Build helper metadata with replicate labels like "rep1", "rep2", ...
+meta_abe <- as.data.frame(colData(vsd_abe)) %>%
+  tibble::rownames_to_column("sample") %>%
+  dplyr::mutate(rep = stringr::str_extract(sample, "rep\\d+"))
+
+# Replicates that have BOTH conditions (minus & plus)
+reps_abe <- intersect(
+  meta_abe %>% dplyr::filter(condition == "minus") %>% dplyr::pull(rep),
+  meta_abe %>% dplyr::filter(condition == "plus")  %>% dplyr::pull(rep)
+)
+
+# Compute per-replicate LFC = (plus - minus) on the VST (log-like) scale
+lfc_list_abe <- lapply(reps_abe, function(r) {
+  s_plus  <- meta_abe %>% dplyr::filter(condition == "plus",  rep == r) %>% dplyr::pull(sample)
+  s_minus <- meta_abe %>% dplyr::filter(condition == "minus", rep == r) %>% dplyr::pull(sample)
+  stopifnot(length(s_plus) == 1, length(s_minus) == 1)
+  vmat_abe[, s_plus, drop = TRUE] - vmat_abe[, s_minus, drop = TRUE]
+})
+
+lfc_mat_abe <- do.call(cbind, lfc_list_abe)
+colnames(lfc_mat_abe) <- reps_abe
+rownames(lfc_mat_abe) <- rownames(vmat_abe)
+
+# Save and show correlations
+write.csv(lfc_mat_abe, file = "ABE_SG218_vst_perrep_LFC_v2.csv")
+cor_abe <- cor(lfc_mat_abe, use = "pairwise.complete.obs", method = "pearson")
+print(cor_abe)
+
+```
+
+```{r}
+pairs(
+  lfc_mat_abe,
+  main = "ABE8e (restricted): per-replicate VST LFC (plus − minus)",
+  pch = 19, cex = 0.4
+)
+```
